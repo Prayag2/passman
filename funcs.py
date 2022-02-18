@@ -1,6 +1,7 @@
 # FUNCS
 import sys
 import random
+import os
 import mysql.connector as sql
 from getpass import getpass
 from consts import DASHES_NO, PUNCT, DIGITS, ALPHA_UP, ALPHA_LOW, ALL
@@ -20,6 +21,17 @@ def cinput(text, *args, sep=" ", end=""):
     if args:
         text += sep.join(args)
     return input(text.title() + "\n❯ " + end)
+
+
+def clear():
+    """
+    Clears the screen.
+    Args:
+        None
+    Returns:
+        None
+    """
+    os.system("cls" if os.name == "nt" else "clear")
 
 
 def log(text, log_type="info"):
@@ -62,9 +74,13 @@ def deco(text, expression="tb"):
     Returns:
         None
     """
+    # Centering text
+    margin = (DASHES_NO - len(text)) // 2
+    spaces = " " * margin if margin <= DASHES_NO else ""
+
     if "t" in expression:
         dash()
-    print(text)
+    print(spaces + text + spaces)
     if "b" in expression:
         dash()
 
@@ -79,6 +95,7 @@ def draw(heading, func, *args):
     Returns:
         None
     """
+    # Printing the heading and running the function
     deco(heading)
     val = func(*args)
     return val
@@ -110,6 +127,7 @@ def generate_random_string(length, digits=True, upper=True, punct=True):
     Returns:
         str: The generated string."""
 
+    passwd = ""
     characters = [x for x in ALPHA_LOW]
     if digits:
         characters.extend(DIGITS)
@@ -117,8 +135,11 @@ def generate_random_string(length, digits=True, upper=True, punct=True):
         characters.extend(ALPHA_UP)
     if punct:
         characters.extend(PUNCT)
-    random.shuffle(characters)
-    return "".join(characters)[:length]
+
+    for i in range(length):
+        passwd += random.choice(characters)
+
+    return passwd
 
 
 def generate_strong_password():
@@ -166,15 +187,15 @@ def encrypt_pass(password):
     key = [x for x in ALL]
     random.shuffle(key)
     key = "".join(key)
-    
+
     # Encrypted password as an empty string
     encrypted_pass = ""
-    
+
     # Encrypting the password by replacing the original character with the encrypted character
     for char in password:
         index = ALL.index(char)
         encrypted_pass += key[index]
-    
+
     # Returning the encrypted password and the key
     return encrypted_pass, key
 
@@ -194,7 +215,7 @@ def decrypt_pass(encrypted_pass, key):
     for i in range(len(encrypted_pass)):
         index = key.index(encrypted_pass[i])
         passwd += ALL[index]
-    
+
     # Returning the decrypted password
     return passwd
 
@@ -216,7 +237,6 @@ def exec_query(connection, query):
     return result
 
 
-# setup database using execute_sql
 def setup_database(connection):
     """
     Sets up the database.
@@ -226,13 +246,22 @@ def setup_database(connection):
         None
     """
 
-    # create a database in mysql named "passman"
+    # Create a database in mysql named "passman"
     cursor = connection.cursor()
     cursor.execute("CREATE DATABASE IF NOT EXISTS passman")
     connection.commit()
     cursor.close()
 
-    # create a table in mysql named "passman"
+    # Create a table in the database named "auth"
+    # This table will store the username and password for
+    # The `new_user` column stores a boolean to tell whether it is a new user or not
+    exec_query(
+        connection,
+        "CREATE TABLE IF NOT EXISTS auth (username VARCHAR(255), password VARCHAR(1000), auth_key VARCHAR(1000), new_user TINYINT(1))",
+    )
+    exec_query(connection, "INSERT INTO auth (new_user) VALUES (1)")
+
+    # Create a table in mysql named "passman"
     exec_query(
         connection,
         "CREATE TABLE IF NOT EXISTS passman\
@@ -242,17 +271,52 @@ def setup_database(connection):
         url VARCHAR(255))",
     )
 
-    # create a table in mysql named "pass_keys"
+    # Create a table in mysql named "pass_keys"
     exec_query(
         connection,
         "CREATE TABLE IF NOT EXISTS pass_keys\
         (id INT AUTO_INCREMENT PRIMARY KEY, \
-        pass_key VARCHAR(2000))"
+        pass_key VARCHAR(2000))",
     )
 
-    deco("Database setup complete", "t")
 
-# display a list of all records in the table "passman"
+def reset_id(connection, table):
+    """
+    Resets the order of IDs of a table.
+    Args:
+        connection (sql.connector): The connection to the database.
+        table (str): The table to be reset.
+    Returns:
+        None
+    """
+
+    # Get the id of the last row
+    data = exec_query(connection, f"SELECT * FROM {table}")
+    new_data = []
+
+    # Removing "id" from every column
+    for row in data:
+        new_row = row[1::]
+        new_data.append(new_row)
+
+    # Get column names
+    desc = exec_query(connection, f"DESC {table}")
+    columns = [row[0] for row in desc][1::]
+    columns = ", ".join(columns)
+
+    # Deleting data from the table
+    exec_query(connection, f"DROP TABLE {table}")
+
+    # Creating all tables again
+    setup_database(connection)
+
+    # Adding new data to the table
+    for row in new_data:
+        if len(row) == 1:
+            row = str(row)[:-2] + ")"
+        exec_query(connection, f"INSERT INTO {table}({columns}) VALUES {row}")
+
+
 def list_pass(connection):
     """
     Displays all records in the database.
@@ -262,10 +326,15 @@ def list_pass(connection):
         None
     """
     result = exec_query(connection, "SELECT * FROM passman")
-    for i, row in enumerate(result):
-        print(f"{i+1}. {row[1]}")
 
-# list all passwords nicely
+    if not result:
+        log("No records found", log_type="info")
+        return
+
+    for row in result:
+        print(f"{row[0]}. {row[1]}")
+
+
 def open_pass(connection):
     """
     Lists all passwords.
@@ -273,22 +342,29 @@ def open_pass(connection):
 
     # Get the details
     try:
-        name = cinput("Enter Item Name/ID").lower()
+        name = cinput("Enter Credential Name/ID").lower()
         if name.isdigit():
             result = exec_query(connection, f"SELECT * FROM passman WHERE id={name}")
-            key = exec_query(connection, f"SELECT pass_key FROM pass_keys WHERE id={name}")[0][0]
+            key = exec_query(
+                connection, f"SELECT pass_key FROM pass_keys WHERE id={name}"
+            )[0][0]
         else:
-            result = exec_query(connection, f"SELECT * FROM passman WHERE name='{name}'")
-            key = exec_query(connection, f"SELECT pass_key FROM pass_keys WHERE id=(SELECT id FROM passman WHERE name='{name}')")[0][0]
+            result = exec_query(
+                connection, f"SELECT * FROM passman WHERE name='{name}'"
+            )
+            key = exec_query(
+                connection,
+                f"SELECT pass_key FROM pass_keys WHERE id=(SELECT id FROM passman WHERE name='{name}')",
+            )[0][0]
     except:
-        log("No such item", log_type="warning")
+        log("No such Credential", log_type="warning")
         return
 
     for row in result:
         print(f"Name: {row[1]}")
         print(f"Username: {row[2]}")
         print(f"Password: {decrypt_pass(row[3], key)}")
-        print(f"URL: {row[4]}")
+        print(f"Website URL: {row[4]}")
 
 
 def create_pass(connection):
@@ -296,12 +372,13 @@ def create_pass(connection):
     Creates a password.
     """
     # Get the details
-    name = cinput("Enter Item Name")
+    name = cinput("Enter Credential Name")
     username = cinput("Enter Username/Email")
     password = cinput("New Password ('g' to generate a strong password)")
 
     # If the input is 'g', generate a strong password
     if password.lower() == "g":
+        deco("Generate Strong Password", "tb")
         password = generate_strong_password()
 
     # Encrypting the password
@@ -313,10 +390,9 @@ def create_pass(connection):
         connection,
         f"INSERT INTO passman (name, username, password, url) VALUES ('{name}', '{username}', '{password}', '{url}')",
     )
-    exec_query(connection,
-    f"INSERT INTO pass_keys(pass_key) VALUES ('{key}')")
+    exec_query(connection, f"INSERT INTO pass_keys(pass_key) VALUES ('{key}')")
 
-    deco("Password created successfully!", "tb")
+    deco("Credential created successfully!", "t")
 
 
 def modify_pass(connection):
@@ -324,15 +400,15 @@ def modify_pass(connection):
     Modifies password.
     """
     # Get the details
-    name = cinput("Enter Item Name/ID").lower()
-    if not exec_query(connection, f"SELECT * FROM passman WHERE id={name}")\
-    and not exec_query(connection, f"SELECT * FROM passman WHERE name='{name}'"):
-        log("No such item", log_type="warning")
+    name = cinput("Search Credential Name/ID").lower()
+    if not exec_query(
+        connection, f"SELECT * FROM passman WHERE id='{name}'"
+    ) and not exec_query(connection, f"SELECT * FROM passman WHERE name='{name}'"):
+        log("No such Credential", log_type="warning")
         return
 
-    name = cinput("Search Item Name/ID").lower()
     dash()
-    new_name = cinput("Enter New Item Name")
+    new_name = cinput("Enter New Credential Name")
     username = cinput("New Username/Email")
     password = cinput("New Password ('g' to generate a strong password)")
 
@@ -350,13 +426,21 @@ def modify_pass(connection):
             connection,
             f"UPDATE passman SET name='{new_name}', username='{username}', password='{password}', url='{url}' WHERE id={name}",
         )
-        exec_query(connection, f"UPDATE pass_keys SET pass_key='{key}' WHERE id={name}")
+        exec_query(
+            connection, f"UPDATE pass_keys SET pass_key='{key}' WHERE id={new_name}"
+        )
     else:
         exec_query(
             connection,
             f"UPDATE passman SET name='{new_name}', username='{username}', password='{password}', url='{url}' WHERE name='{name}'",
         )
-        exec_query(connection, f"UPDATE pass_keys SET pass_key='{key}' WHERE id=(SELECT id FROM passman WHERE name='{name}')")
+        exec_query(
+            connection,
+            f"UPDATE pass_keys SET pass_key='{key}' WHERE id=(SELECT id FROM passman WHERE name='{new_name}')",
+        )
+
+    # Print success message
+    deco("Credential modified successfully!", "t")
 
 
 def delete_pass(connection):
@@ -368,36 +452,32 @@ def delete_pass(connection):
         None
     """
     # Get the details
-    name = cinput("Item Name")
+    name = cinput("Enter Credential Name/ID").lower()
+    if not exec_query(
+        connection, f"SELECT * FROM passman WHERE id='{name}'"
+    ) and not exec_query(connection, f"SELECT * FROM passman WHERE name='{name}'"):
+        log("No such Credential", log_type="warning")
+        return
+
+    # Confirm delete
+    confirm = cinput("Do you really want to delete this Credential? (y/n)").lower()
+    if not confirm == "y":
+        return
 
     # delete data from database
-    exec_query(connection, f"DELETE FROM passman WHERE name='{name}'")
+    if name.isdigit():
+        exec_query(connection, f"DELETE FROM passman WHERE id={name}")
+        exec_query(connection, f"DELETE FROM pass_keys WHERE id={name}")
+    else:
+        exec_query(
+            connection,
+            f"DELETE FROM pass_keys WHERE id=(SELECT id FROM passman WHERE name='{name}')",
+        )
+        exec_query(connection, f"DELETE FROM passman WHERE name='{name}'")
 
+    # reset order of IDs
+    reset_id(connection, "passman")
+    reset_id(connection, "pass_keys")
 
-# alpha = string.ascii_lowercase
-# punct = string.punctuation
-# num = string.digits
-# both = " " + alpha + punct + string.digits
-#
-#
-# def keygen():
-#     key = list(string.punctuation + string.digits + string.ascii_uppercase)
-#     random.shuffle(key)
-#     return "".join(key)[:69]
-#
-# key = keygen()
-# text = "egw7zpwqq4"
-#
-# print(key)
-# print(both)
-# print()
-# lst = [x for x in text]
-# for i in range(len(lst)):
-#     a = lst[i]
-#     lst[i] = key[both.index(a)]
-# print("".join(lst))
-#
-# for i in range(len(lst)):
-#     a = lst[i]
-#     lst[i] = both[key.index(a)]
-# print("".join(lst))
+    # Print success message
+    deco("Password deleted successfully!", "t")
